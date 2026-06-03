@@ -122,37 +122,24 @@ function Install-Exe {
 }
 
 # -------------------------------------------------------
-# Everything
-# У Voidtools нет беcверсионного URL — парсим страницу загрузок
+# Everything — через winget
+# Парсинг HTML страницы ненадёжен: Voidtools меняют вёрстку.
+# winget всегда даёт актуальную версию из официального источника.
 # -------------------------------------------------------
-
-function Get-VoidtoolsEverythingUrl {
-    try {
-        $page = (Invoke-WebRequest -Uri "https://www.voidtools.com/downloads/" -UseBasicParsing).Content
-    }
-    catch {
-        throw "Не удалось загрузить страницу загрузок Voidtools: $_"
-    }
-
-    $match = [regex]::Match($page, 'https://www\.voidtools\.com/Everything-[\d.]+-x64-Setup\.exe')
-
-    if (-not $match.Success) {
-        throw "Не удалось найти ссылку на Everything x64 Setup на странице voidtools.com/downloads/"
-    }
-
-    return $match.Value
-}
 
 Write-Host ""
 Write-Host "--- Everything ---"
 
-$everythingUrl = Get-VoidtoolsEverythingUrl
-$everything = Join-Path $dp "Everything.exe"
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+    throw "winget не найден. Установи 'App Installer' из Microsoft Store."
+}
 
-Get-File -Url $everythingUrl -Output $everything
+Write-Host "Установка Everything через winget..."
+& winget install --id voidtools.Everything --silent --accept-package-agreements --accept-source-agreements
 
-Write-Host "Установка Everything..."
-Install-Exe -Path $everything -Arguments @("/S")
+if ($LASTEXITCODE -notin @(0, 3010)) {
+    throw "winget не смог установить Everything. Код: $LASTEXITCODE"
+}
 
 # -------------------------------------------------------
 # Windhawk
@@ -213,7 +200,6 @@ Install-Exe -Path $hiddify
 
 # -------------------------------------------------------
 # MiniBin
-# Скачиваем с официального сайта разработчика
 # -------------------------------------------------------
 
 Write-Host ""
@@ -222,7 +208,6 @@ Write-Host "--- MiniBin ---"
 $miniZip = Join-Path $dp "MiniBin.zip"
 $miniDir = Join-Path $dp "MiniBin"
 
-# Официальная страница: https://www.e-sushi.net/
 Get-File -Url "https://e-sushi.net/wp-content/uploads/2012/03/MiniBin.zip" -Output $miniZip
 
 if (Test-Path $miniDir) {
