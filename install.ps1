@@ -43,7 +43,7 @@ Start-Process $everything -ArgumentList "/S" -Wait
 $windhawk = "$dp\WindhawkSetup.exe"
 
 Get-File `
-"https://update.windhawk.net/downloads/windhawk_setup.exe" `
+"https://github.com/ramensoftware/windhawk/releases/latest/download/windhawk_setup.exe" `
 $windhawk
 
 Write-Host "Установка Windhawk..."
