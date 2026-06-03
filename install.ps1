@@ -123,13 +123,30 @@ function Install-Exe {
 
 # -------------------------------------------------------
 # Everything
-# Используем прямую стабильную ссылку вместо парсинга HTML
+# У Voidtools нет беcверсионного URL — парсим страницу загрузок
 # -------------------------------------------------------
+
+function Get-VoidtoolsEverythingUrl {
+    try {
+        $page = (Invoke-WebRequest -Uri "https://www.voidtools.com/downloads/" -UseBasicParsing).Content
+    }
+    catch {
+        throw "Не удалось загрузить страницу загрузок Voidtools: $_"
+    }
+
+    $match = [regex]::Match($page, 'https://www\.voidtools\.com/Everything-[\d.]+-x64-Setup\.exe')
+
+    if (-not $match.Success) {
+        throw "Не удалось найти ссылку на Everything x64 Setup на странице voidtools.com/downloads/"
+    }
+
+    return $match.Value
+}
 
 Write-Host ""
 Write-Host "--- Everything ---"
 
-$everythingUrl = "https://www.voidtools.com/Everything-x64-Setup.exe"
+$everythingUrl = Get-VoidtoolsEverythingUrl
 $everything = Join-Path $dp "Everything.exe"
 
 Get-File -Url $everythingUrl -Output $everything
