@@ -1,237 +1,229 @@
-# ==========================
-# DP Installer
-# ==========================
- 
-#Requires -RunAsAdministrator
- 
-$ErrorActionPreference = "Stop"
-[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
- 
-$dp = "C:\DP"
-New-Item -ItemType Directory -Path $dp -Force | Out-Null
-Write-Host "Создана папка $dp"
- 
-# -------------------------------------------------------
-# Вспомогательные функции
-# -------------------------------------------------------
- 
-function Get-File {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Url,
- 
-        [Parameter(Mandatory)]
-        [string]$Output
-    )
- 
-    Write-Host ""
-    Write-Host "Скачивание: $(Split-Path $Output -Leaf)"
- 
-    if (Test-Path $Output) {
-        Remove-Item $Output -Force
+<#
+.SYNOPSIS
+    Автоматическая установка программ на чистую Windows 10/11
+.DESCRIPTION
+    Устанавливает приложения через winget и прямые загрузки с GitHub (FreeSMLauncher, MiniBin).
+    Пропускает уже установленные программы.
+#>
+
+#region Массивы для логирования
+$successList = [System.Collections.ArrayList]::new()
+$alreadyList = [System.Collections.ArrayList]::new()
+$failedList  = [System.Collections.ArrayList]::new()
+
+#region Winget пакеты (id из официального репозитория)
+$wingetPackages = @(
+    @{ Id = "RamenSoftware.Windhawk";        Name = "Windhawk" },
+    @{ Id = "voidtools.Everything";          Name = "Everything" },
+    @{ Id = "AntibodySoftware.WizTree";      Name = "WizTree" },
+    @{ Id = "Valve.Steam";                   Name = "Steam" },
+    @{ Id = "Microsoft.VisualStudioCode";    Name = "Visual Studio Code" },
+    @{ Id = "hiddify.hiddify";               Name = "Hiddify" },
+    @{ Id = "qBittorrent.qBittorrent";       Name = "qBittorrent" },
+    @{ Id = "Microsoft.PowerToys";           Name = "PowerToys" },
+    @{ Id = "zhongyang219.TrafficMonitor";   Name = "TrafficMonitor" },
+    @{ Id = "Dev47Apps.DroidCam";            Name = "DroidCam" },
+    @{ Id = "LocalSend.LocalSend";           Name = "LocalSend" },
+    @{ Id = "Discord.Discord";               Name = "Discord" }
+)
+
+#region GitHub-репозитории для fallback установки
+$githubApps = @(
+    @{ 
+        Owner = "FreesmTeam"
+        Repo = "FreesmLauncher"
+        Name = "FreeSM Launcher"
+        ExePattern = "\.exe$"
+        SilentArgs = @("/S", "/SILENT")
+        CheckPaths = @(
+            "$env:LOCALAPPDATA\Programs\FreeSM Launcher\FreeSM Launcher.exe"
+        )
     }
- 
-    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
-    if ($curl) {
-        & curl.exe -L --fail --silent --show-error --retry 3 --retry-delay 2 --output $Output $Url
-        if ($LASTEXITCODE -ne 0) {
-            throw "curl не смог скачать файл: $Url"
-        }
+    @{ 
+        Owner = "kobaltgit"
+        Repo = "MiniBin"
+        Name = "MiniBin"
+        ExePattern = "\.exe$"
+        SilentArgs = @("/S", "/SILENT")
+        CheckPaths = @(
+            "$env:ProgramFiles\MiniBin\MiniBin.exe",
+            "$env:LOCALAPPDATA\MiniBin\MiniBin.exe"
+        )
     }
-    else {
-        try {
-            Invoke-WebRequest -Uri $Url -OutFile $Output -MaximumRedirection 10 -UseBasicParsing
-        }
-        catch {
-            throw "Invoke-WebRequest не смог скачать файл: $Url`nОшибка: $_"
-        }
-    }
- 
-    if (!(Test-Path $Output) -or (Get-Item $Output).Length -eq 0) {
-        throw "Файл не был создан или пустой: $Output"
-    }
-}
- 
-function Get-GitHubLatestAssetUrl {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Owner,
- 
-        [Parameter(Mandatory)]
-        [string]$Repo,
- 
-        [Parameter(Mandatory)]
-        [string]$AssetPattern
-    )
- 
-    $api = "https://api.github.com/repos/$Owner/$Repo/releases/latest"
-    $headers = @{
-        "User-Agent" = "DPInstaller/1.0"
-        "Accept"     = "application/vnd.github+json"
-    }
- 
+)
+
+#region Вспомогательные функции
+function Test-WingetInstalled {
+    param([string]$packageId)
     try {
-        $release = Invoke-RestMethod -Uri $api -Headers $headers
+        $result = & winget list --exact --id $packageId --disable-interactivity 2>&1
+        if ($LASTEXITCODE -eq 0 -and ($result -match $packageId)) {
+            return $true
+        }
+    } catch { }
+    return $false
+}
+
+function Test-GitHubAppInstalled {
+    param([string[]]$checkPaths)
+    foreach ($path in $checkPaths) {
+        if (Test-Path $path -PathType Leaf) {
+            return $true
+        }
+    }
+    # Дополнительно проверим по имени процесса
+    $procName = (Split-Path $checkPaths[0] -LeafBase)
+    if (Get-Process $procName -ErrorAction SilentlyContinue) {
+        return $true
+    }
+    return $false
+}
+
+function Test-Winget {
+    if (Get-Command "winget" -ErrorAction SilentlyContinue) {
+        return $true
+    }
+    Write-Warning "winget не найден. Попытка инициализации через Microsoft Store..."
+    try {
+        Start-Process "ms-windows-store://pdp/?ProductId=9nblggh4nns1" -ErrorAction Stop
+        Write-Host "Открыт Microsoft Store. Пожалуйста, установите 'App Installer' и перезапустите скрипт." -ForegroundColor Yellow
+        pause
+        if (Get-Command "winget" -ErrorAction SilentlyContinue) {
+            return $true
+        } else {
+            throw "winget так и не появился"
+        }
     }
     catch {
-        throw "Не удалось получить данные релиза $Owner/$Repo : $_"
-    }
- 
-    $asset = $release.assets | Where-Object { $_.name -match $AssetPattern } | Select-Object -First 1
- 
-    if (-not $asset) {
-        $available = ($release.assets | Select-Object -ExpandProperty name) -join ", "
-        throw "Не найден файл по шаблону '$AssetPattern' в $Owner/$Repo.`nДоступные файлы: $available"
-    }
- 
-    return $asset.browser_download_url
-}
- 
-function Install-Exe {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Path,
- 
-        [string[]]$Arguments = @()
-    )
- 
-    if (-not (Test-Path $Path)) {
-        throw "Установщик не найден: $Path"
-    }
- 
-    $params = @{
-        FilePath = $Path
-        Wait     = $true
-        PassThru = $true
-    }
- 
-    if ($Arguments.Count -gt 0) {
-        $params.ArgumentList = $Arguments
-    }
- 
-    $process = Start-Process @params
- 
-    # Код 0 — успех, 3010 — успех с перезагрузкой
-    if ($process.ExitCode -notin @(0, 3010)) {
-        throw "Установщик '$Path' завершился с ошибкой. Код: $($process.ExitCode)"
-    }
- 
-    if ($process.ExitCode -eq 3010) {
-        Write-Host "  [!] Требуется перезагрузка для завершения установки."
+        Write-Error "Не удалось инициализировать winget. Установите 'App Installer' вручную из Store."
+        return $false
     }
 }
- 
-# -------------------------------------------------------
-# Everything — через winget
-# Парсинг HTML страницы ненадёжен: Voidtools меняют вёрстку.
-# winget всегда даёт актуальную версию из официального источника.
-# -------------------------------------------------------
- 
-Write-Host ""
-Write-Host "--- Everything ---"
- 
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    throw "winget не найден. Установи 'App Installer' из Microsoft Store."
+
+function Install-WithWinget {
+    param($packageId, $displayName)
+    # Проверка, установлена ли уже
+    if (Test-WingetInstalled -packageId $packageId) {
+        Write-Host "⏭️  $displayName уже установлен (пропуск)" -ForegroundColor Gray
+        $alreadyList.Add("$displayName ($packageId)") | Out-Null
+        return
+    }
+    
+    Write-Host "📦 Установка $displayName через winget..."
+    try {
+        & winget install --id $packageId --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "✅ $displayName установлен" -ForegroundColor Green
+            $successList.Add("$displayName ($packageId)") | Out-Null
+        } else {
+            throw "winget завершился с кодом $LASTEXITCODE"
+        }
+    }
+    catch {
+        Write-Warning "❌ Ошибка установки $displayName : $_"
+        $failedList.Add("$displayName ($packageId)") | Out-Null
+    }
 }
- 
-Write-Host "Установка Everything через winget..."
-& winget install --id voidtools.Everything --silent --accept-package-agreements --accept-source-agreements
- 
-if ($LASTEXITCODE -notin @(0, 3010)) {
-    throw "winget не смог установить Everything. Код: $LASTEXITCODE"
+
+function Install-FromGitHub {
+    param($owner, $repo, $displayName, $silentArgs, $checkPaths)
+    # Проверка, установлена ли уже
+    if (Test-GitHubAppInstalled -checkPaths $checkPaths) {
+        Write-Host "⏭️  $displayName уже установлен (пропуск)" -ForegroundColor Gray
+        $alreadyList.Add($displayName) | Out-Null
+        return
+    }
+
+    $tempDir = $env:TEMP
+    $apiUrl = "https://api.github.com/repos/$owner/$repo/releases/latest"
+    try {
+        Write-Host "🌐 Получение информации о последнем релизе $displayName ..."
+        $release = Invoke-RestMethod -Uri $apiUrl -ErrorAction Stop
+        $asset = $release.assets | Where-Object { $_.name -match "\.exe$" } | Select-Object -First 1
+        if (-not $asset) {
+            throw "Не найден .exe файл в релизе"
+        }
+        $downloadUrl = $asset.browser_download_url
+        $fileName = $asset.name
+        $localPath = Join-Path $tempDir $fileName
+
+        Write-Host "⬇️  Скачивание $fileName ..."
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $localPath -ErrorAction Stop
+
+        $installed = $false
+        foreach ($arg in $silentArgs) {
+            Write-Host "🔧 Запуск $fileName с параметром $arg ..."
+            $process = Start-Process -FilePath $localPath -ArgumentList $arg -Wait -PassThru -NoNewWindow
+            if ($process.ExitCode -eq 0) {
+                $installed = $true
+                break
+            } else {
+                Write-Warning "Не удалось установить с $arg (код $($process.ExitCode))"
+            }
+        }
+        if ($installed) {
+            Write-Host "✅ $displayName установлен" -ForegroundColor Green
+            $successList.Add($displayName) | Out-Null
+        } else {
+            throw "Ни один из тихих аргументов не сработал"
+        }
+        Remove-Item $localPath -Force -ErrorAction SilentlyContinue
+    }
+    catch {
+        Write-Warning "❌ Ошибка при установке $displayName : $_"
+        $failedList.Add($displayName) | Out-Null
+    }
 }
- 
-# -------------------------------------------------------
-# Windhawk
-# -------------------------------------------------------
- 
-Write-Host ""
-Write-Host "--- Windhawk ---"
- 
-$windhawkUrl = Get-GitHubLatestAssetUrl `
-    -Owner "ramensoftware" `
-    -Repo "windhawk" `
-    -AssetPattern "windhawk_setup\.exe$"
- 
-$windhawk = Join-Path $dp "WindhawkSetup.exe"
- 
-Get-File -Url $windhawkUrl -Output $windhawk
- 
-Write-Host "Установка Windhawk..."
-Install-Exe -Path $windhawk -Arguments @("/S", "/STANDARD")
- 
-# -------------------------------------------------------
-# FreeSM Launcher
-# -------------------------------------------------------
- 
-Write-Host ""
-Write-Host "--- FreeSM Launcher ---"
- 
-$freesmUrl = Get-GitHubLatestAssetUrl `
-    -Owner "FreesmTeam" `
-    -Repo "FreesmLauncher" `
-    -AssetPattern "Setup.*\.exe$"
- 
-$freesm = Join-Path $dp "FreesmLauncher.exe"
- 
-Get-File -Url $freesmUrl -Output $freesm
- 
-Write-Host "Запуск установки FreeSM Launcher..."
-Install-Exe -Path $freesm
- 
-# -------------------------------------------------------
-# Hiddify
-# -------------------------------------------------------
- 
-Write-Host ""
-Write-Host "--- Hiddify ---"
- 
-$hiddifyUrl = Get-GitHubLatestAssetUrl `
-    -Owner "hiddify" `
-    -Repo "hiddify-app" `
-    -AssetPattern "Windows.*Setup.*x64.*\.exe$"
- 
-$hiddify = Join-Path $dp "Hiddify.exe"
- 
-Get-File -Url $hiddifyUrl -Output $hiddify
- 
-Write-Host "Запуск установки Hiddify..."
-Install-Exe -Path $hiddify
- 
-# -------------------------------------------------------
-# MiniBin
-# -------------------------------------------------------
- 
-Write-Host ""
-Write-Host "--- MiniBin ---"
- 
-$miniZip = Join-Path $dp "MiniBin.zip"
-$miniDir = Join-Path $dp "MiniBin"
- 
-Get-File -Url "https://e-sushi.net/wp-content/uploads/2012/03/MiniBin.zip" -Output $miniZip
- 
-if (Test-Path $miniDir) {
-    Remove-Item $miniDir -Recurse -Force
+
+#region Основной процесс
+Clear-Host
+Write-Host "=== Начало автоматической установки ===" -ForegroundColor Cyan
+
+# 1. Инициализация winget
+if (-not (Test-Winget)) {
+    Write-Error "Невозможно продолжить: winget не доступен."
+    exit 1
 }
- 
-Expand-Archive -Path $miniZip -DestinationPath $miniDir -Force
- 
-$miniExe = Get-ChildItem -Path $miniDir -Filter "*.exe" -Recurse | Select-Object -First 1
- 
-if (-not $miniExe) {
-    Write-Warning "MiniBin: .exe не найден в архиве. Проверьте содержимое $miniDir"
+
+# 2. Установка пакетов через winget
+foreach ($pkg in $wingetPackages) {
+    Install-WithWinget -packageId $pkg.Id -displayName $pkg.Name
 }
-else {
-    Write-Host "Запуск MiniBin..."
-    Start-Process -FilePath $miniExe.FullName
+
+# 3. Установка приложений через GitHub
+foreach ($app in $githubApps) {
+    Install-FromGitHub -owner $app.Owner -repo $app.Repo -displayName $app.Name -silentArgs $app.SilentArgs -checkPaths $app.CheckPaths
 }
- 
-# -------------------------------------------------------
-# Готово
-# -------------------------------------------------------
- 
-Write-Host ""
-Write-Host "====================================="
-Write-Host " Установка завершена."
-Write-Host " Файлы находятся в $dp"
-Write-Host "====================================="
+
+#region Вывод результатов
+Clear-Host
+Write-Host "==================== РЕЗУЛЬТАТ УСТАНОВКИ ====================" -ForegroundColor Cyan
+
+Write-Host "`n🟢 УСПЕШНО УСТАНОВЛЕНО:" -ForegroundColor Green
+if ($successList.Count -eq 0) {
+    Write-Host "  (нет)" -ForegroundColor Gray
+} else {
+    foreach ($item in $successList) {
+        Write-Host "  ✓ $item" -ForegroundColor Green
+    }
+}
+
+Write-Host "`n🟡 УЖЕ УСТАНОВЛЕНЫ (пропущены):" -ForegroundColor Yellow
+if ($alreadyList.Count -eq 0) {
+    Write-Host "  (нет)" -ForegroundColor Gray
+} else {
+    foreach ($item in $alreadyList) {
+        Write-Host "  • $item" -ForegroundColor Yellow
+    }
+}
+
+Write-Host "`n🔴 НЕ УДАЛОСЬ УСТАНОВИТЬ:" -ForegroundColor Red
+if ($failedList.Count -eq 0) {
+    Write-Host "  (нет)" -ForegroundColor Gray
+} else {
+    foreach ($item in $failedList) {
+        Write-Host "  ✗ $item" -ForegroundColor Red
+    }
+}
+Write-Host "`n=============================================================" -ForegroundColor Cyan
+#endregion
