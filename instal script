@@ -1,2 +1,5 @@
 $url = "https://raw.githubusercontent.com/sorokinilya323-stack/DPInstaller/refs/heads/main/install.ps1"
 Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"iwr -Uri '$url' -UseBasicParsing | iex`""
+
+
+$url = "https://raw.githubusercontent.com/sorokinilya323-stack/DPInstaller/refs/heads/main/install.ps1"; Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"iwr -Uri '$url' -UseBasicParsing | iex`""
